@@ -33,4 +33,8 @@ build/
 .vscode/
 
 mongo-init.js
+.env-dev
+.env-prod
+application-*.local.properties
+target
 .env
