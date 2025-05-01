@@ -1,0 +1,106 @@
+### Java ###
+*.class
+*.jar
+*.war
+*.ear
+*.nar
+hs_err_pid*
+bin/
+build/
+out/
+target/
+.tanget
+
+### Maven ###
+pom.xml.versionsBackup
+pom.xml.next
+.mvn/
+.mvn/wrapper/maven-wrapper.jar
+dependency-reduced-pom.xml
+
+### IDE ###
+.idea/
+*.iml
+*.ipr
+*.iws
+.classpath
+.project
+.settings/
+.factorypath
+.springBeans
+
+### Eclipse ###
+.metadata/
+
+### VS Code ###
+.vscode/
+
+### Logs ###
+*.log
+logs/
+
+### Environment ###
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+### Application Properties ###
+application.properties
+!src/main/resources/application*.properties
+
+### Docker ###
+docker-compose.override.yml
+docker-compose.yml.version
+
+### Database ###
+*.db
+*.h2.db
+
+### System ###
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+~*
+*.bak
+*.tmp
+
+### GitHub Actions ###
+!.github/workflows/ci.yml
+!.github/workflows/cd.yml
+
+### Test coverage ###
+.jacoco/
+jacoco.exec
+*.jfr
+
+### Frontend (caso exista) ###
+node_modules/
+dist/
+npm-debug.log*
+
+### OpenCV/TensorFlow Native Libs ###
+*.dll
+*.so
+*.dylib
+
+### Credenciais/Chaves ###
+*.key
+*.pem
+*.cert
+*.jks
+
+### MacOS ###
+._*
+
+### Linux ###
+*~
+
+### Windows ###
+[Tt]humbs.db
+Desktop.ini
+
+mongo-init.js
+.env

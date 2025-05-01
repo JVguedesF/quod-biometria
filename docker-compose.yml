@@ -1,0 +1,70 @@
+version: '3.8'
+
+services:
+  # MongoDB service
+  mongodb:
+    image: mongo:latest
+    container_name: quod-mongodb
+    restart: always
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
+      MONGO_INITDB_DATABASE: ${MONGO_DATABASE}
+      MONGO_APP_USERNAME: ${MONGO_APP_USERNAME}
+      MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD}
+    volumes:
+      - ./mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+      - mongodb_data:/data/db
+    networks:
+      - quod-network
+    command: mongod --auth
+
+  # MongoDB Express for admin interface (optional, disable in production)
+  mongo-express:
+    image: mongo-express:latest
+    container_name: quod-mongo-express
+    restart: always
+    ports:
+      - "8081:8081"
+    environment:
+      ME_CONFIG_MONGODB_ADMINUSERNAME: ${MONGO_ROOT_USERNAME}
+      ME_CONFIG_MONGODB_ADMINPASSWORD: ${MONGO_ROOT_PASSWORD}
+      ME_CONFIG_MONGODB_SERVER: mongodb
+    depends_on:
+      - mongodb
+    networks:
+      - quod-network
+    profiles:
+      - dev  # Só será iniciado quando o perfil 'dev' for ativado
+
+  # Spring Boot application
+  quod-app:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: quod-app
+    restart: always
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-dev}
+      SPRING_DATA_MONGODB_URI: mongodb://${MONGO_APP_USERNAME}:${MONGO_APP_PASSWORD}@mongodb:27017/${MONGO_DATABASE}?authSource=admin
+      JAVA_OPTS: "-Xmx512m"
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRATION: ${JWT_EXPIRATION}
+      JWT_REFRESH_EXPIRATION: ${JWT_REFRESH_EXPIRATION}
+      QUOD_SYSTEM_API_BASE_URL: ${QUOD_SYSTEM_API_BASE_URL}
+      QUOD_SYSTEM_API_KEY: ${QUOD_SYSTEM_API_KEY}
+    depends_on:
+      - mongodb
+    networks:
+      - quod-network
+
+networks:
+  quod-network:
+    driver: bridge
+
+volumes:
+  mongodb_data:
