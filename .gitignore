@@ -38,3 +38,4 @@ mongo-init.js
 application-*.local.properties
 target
 .env
+estrutura.txt
