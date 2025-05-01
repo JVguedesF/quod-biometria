@@ -1,0 +1,358 @@
+name: QUOD Biometria CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'development'
+        type: choice
+        options:
+          - development
+          - staging
+          - production
+
+jobs:
+  security-check:
+    name: Security Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v3
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: OWASP Dependency Check
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: 'QUOD Biometria'
+          path: '.'
+          format: 'HTML'
+          out: 'reports'
+          args: >
+            --failOnCVSS 7
+            --enableRetired
+
+      - name: Upload dependency check report
+        uses: actions/upload-artifact@v3
+        with:
+          name: dependency-check-report
+          path: reports/dependency-check-report.html
+
+  # Compilação e testes unitários
+  build-and-test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    needs: security-check
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v3
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Cache Maven packages
+        uses: actions/cache@v3
+        with:
+          path: ~/.m2
+          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+          restore-keys: ${{ runner.os }}-m2
+
+      - name: Build and test with Maven
+        run: mvn -B clean package
+        env:
+          SPRING_PROFILES_ACTIVE: test
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+
+      - name: Run code coverage
+        run: mvn jacoco:report
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v3
+        with:
+          name: test-results
+          path: target/surefire-reports
+
+      - name: Upload code coverage
+        uses: actions/upload-artifact@v3
+        with:
+          name: code-coverage
+          path: target/site/jacoco
+
+      - name: Upload JAR artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: quod-biometria-jar
+          path: target/*.jar
+
+  # Análise estática de código
+  code-analysis:
+    name: Code Analysis
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # Important for Sonar analysis
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v3
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: SonarQube Analysis
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          if [ -n "$SONAR_TOKEN" ]; then
+            mvn -B verify sonar:sonar -Dsonar.projectKey=quod-biometria -Dsonar.host.url=${{ secrets.SONAR_HOST_URL }}
+          else
+            echo "SONAR_TOKEN is not set, skipping SonarQube analysis"
+          fi
+
+      - name: Run SpotBugs
+        run: mvn spotbugs:check
+
+      - name: Run PMD
+        run: mvn pmd:check
+
+  # Testes de integração
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    services:
+      mongodb:
+        image: mongo:latest
+        ports:
+          - 27018:27018
+        env:
+          MONGO_INITDB_ROOT_USERNAME: root
+          MONGO_INITDB_ROOT_PASSWORD: ${{ secrets.TEST_DB_PASSWORD }}
+        options: >-
+          --health-cmd="mongosh --eval 'db.runCommand({ping:1})' --quiet"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v3
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Run integration tests
+        run: mvn -B verify -Pintegration-test
+        env:
+          SPRING_DATA_MONGODB_URI: mongodb://root:${{secrets.TEST_DB_PASSWORD }}@localhost:27018/quod_biometria?authSource=admin
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+
+  # Build de imagem Docker
+  build-docker:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+    needs: [code-analysis, integration-tests]
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Download JAR artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: quod-biometria-jar
+          path: target
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+        if: ${{ secrets.DOCKERHUB_USERNAME != '' }}
+
+      - name: Extract branch name
+        shell: bash
+        run: echo "BRANCH_NAME=$(echo ${GITHUB_REF#refs/heads/} | sed 's/\//-/g')" >> $GITHUB_ENV
+        id: extract_branch
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: ${{ secrets.DOCKERHUB_USERNAME != '' }}
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/quod-biometria:${{ github.sha }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/quod-biometria:${{ env.BRANCH_NAME }}
+            ${{ github.ref == 'refs/heads/main' && format('{0}/quod-biometria:latest', secrets.DOCKERHUB_USERNAME) || '' }}
+          cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/quod-biometria:${{ env.BRANCH_NAME }}
+          cache-to: type=inline
+          build-args: |
+            SPRING_PROFILES_ACTIVE=${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}
+
+  # Deploy para ambiente de desenvolvimento
+  deploy-dev:
+    name: Deploy to Development
+    runs-on: ubuntu-latest
+    needs: build-docker
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/develop') || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'development')
+    environment: development
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Deploy to Development Server
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.DEV_HOST }}
+          username: ${{ secrets.DEV_USERNAME }}
+          key: ${{ secrets.DEV_SSH_KEY }}
+          script: |
+            mkdir -p /opt/quod-biometria
+            cd /opt/quod-biometria
+            
+            # Pull latest docker-compose.yml from repo
+            curl -s https://raw.githubusercontent.com/${{ github.repository }}/develop/docker-compose.yml -o docker-compose.yml
+            curl -s https://raw.githubusercontent.com/${{ github.repository }}/develop/mongo-init.js -o mongo-init.js
+            
+            # Download env setup script
+            curl -s https://raw.githubusercontent.com/${{ github.repository }}/develop/deploy.sh -o deploy.sh
+            chmod +x deploy.sh
+            
+            # Create .env file from secrets
+            cat > .env-dev << EOL
+            MONGO_ROOT_USERNAME=${{ secrets.MONGO_ROOT_USERNAME }}
+            MONGO_ROOT_PASSWORD=${{ secrets.MONGO_ROOT_PASSWORD }}
+            MONGO_APP_USERNAME=${{ secrets.MONGO_APP_USERNAME }}
+            MONGO_APP_PASSWORD=${{ secrets.MONGO_APP_PASSWORD }}
+            MONGO_DATABASE=quod_biometria
+            SPRING_PROFILES_ACTIVE=dev
+            JWT_SECRET=${{ secrets.JWT_SECRET }}
+            JWT_EXPIRATION=86400000
+            JWT_REFRESH_EXPIRATION=604800000
+            QUOD_SYSTEM_API_BASE_URL=${{ secrets.QUOD_SYSTEM_API_BASE_URL }}
+            QUOD_SYSTEM_API_KEY=${{ secrets.QUOD_SYSTEM_API_KEY }}
+            EOL
+            
+            # Deploy using script
+            ./deploy.sh dev
+
+      - name: Deployment Notification
+        run: echo "Deployed to development environment"
+
+  # Deploy para ambiente de homologação
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: build-docker
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'staging')
+    environment: staging
+    steps:
+      - name: Deploy to Staging Server
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.STAGING_HOST }}
+          username: ${{ secrets.STAGING_USERNAME }}
+          key: ${{ secrets.STAGING_SSH_KEY }}
+          script: |
+            mkdir -p /opt/quod-biometria
+            cd /opt/quod-biometria
+            
+            # Pull latest docker-compose.yml from repo
+            curl -s https://raw.githubusercontent.com/${{ github.repository }}/main/docker-compose.yml -o docker-compose.yml
+            curl -s https://raw.githubusercontent.com/${{ github.repository }}/main/mongo-init.js -o mongo-init.js
+            
+            # Download env setup script
+            curl -s https://raw.githubusercontent.com/${{ github.repository }}/main/deploy.sh -o deploy.sh
+            chmod +x deploy.sh
+            
+            # Create .env file from secrets
+            cat > .env-staging << EOL
+            MONGO_ROOT_USERNAME=${{ secrets.MONGO_ROOT_USERNAME }}
+            MONGO_ROOT_PASSWORD=${{ secrets.MONGO_ROOT_PASSWORD }}
+            MONGO_APP_USERNAME=${{ secrets.MONGO_APP_USERNAME }}
+            MONGO_APP_PASSWORD=${{ secrets.MONGO_APP_PASSWORD }}
+            MONGO_DATABASE=quod_biometria
+            SPRING_PROFILES_ACTIVE=staging
+            JWT_SECRET=${{ secrets.JWT_SECRET }}
+            JWT_EXPIRATION=86400000
+            JWT_REFRESH_EXPIRATION=604800000
+            QUOD_SYSTEM_API_BASE_URL=${{ secrets.QUOD_SYSTEM_API_BASE_URL }}
+            QUOD_SYSTEM_API_KEY=${{ secrets.QUOD_SYSTEM_API_KEY }}
+            EOL
+            
+            # Deploy using script
+            ./deploy.sh staging
+
+      - name: Deployment Notification
+        run: echo "Deployed to staging environment"
+
+  # Deploy para ambiente de produção
+  deploy-prod:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production'
+    environment: production
+    steps:
+      - name: Deploy to Production Server
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: ${{ secrets.PROD_USERNAME }}
+          key: ${{ secrets.PROD_SSH_KEY }}
+          script: |
+            mkdir -p /opt/quod-biometria
+            cd /opt/quod-biometria
+            
+            # Pull latest docker-compose.yml from repo
+            curl -s https://raw.githubusercontent.com/${{ github.repository }}/main/docker-compose.yml -o docker-compose.yml
+            curl -s https://raw.githubusercontent.com/${{ github.repository }}/main/mongo-init.js -o mongo-init.js
+            
+            # Download env setup script
+            curl -s https://raw.githubusercontent.com/${{ github.repository }}/main/deploy.sh -o deploy.sh
+            chmod +x deploy.sh
+            
+            # Create .env file from secrets
+            cat > .env-prod << EOL
+            MONGO_ROOT_USERNAME=${{ secrets.MONGO_ROOT_USERNAME }}
+            MONGO_ROOT_PASSWORD=${{ secrets.MONGO_ROOT_PASSWORD }}
+            MONGO_APP_USERNAME=${{ secrets.MONGO_APP_USERNAME }}
+            MONGO_APP_PASSWORD=${{ secrets.MONGO_APP_PASSWORD }}
+            MONGO_DATABASE=quod_biometria
+            SPRING_PROFILES_ACTIVE=prod
+            JWT_SECRET=${{ secrets.JWT_SECRET }}
+            JWT_EXPIRATION=${{ secrets.JWT_EXPIRATION }}
+            JWT_REFRESH_EXPIRATION=${{ secrets.JWT_REFRESH_EXPIRATION }}
+            QUOD_SYSTEM_API_BASE_URL=${{ secrets.QUOD_SYSTEM_API_BASE_URL }}
+            QUOD_SYSTEM_API_KEY=${{ secrets.QUOD_SYSTEM_API_KEY }}
+            EOL
+            
+            # Backup current deployment if it exists
+            if [ -f .env ]; then
+              cp .env .env.bak-$(date +%Y%m%d-%H%M%S)
+            fi
+            
+            # Deploy using script with confirmation step
+            ./deploy.sh prod
+
+      - name: Production Deployment Notification
+        run: echo "Deployed to production environment"

@@ -7,7 +7,7 @@ services:
     container_name: quod-mongodb
     restart: always
     ports:
-      - "27017:27017"
+      - "${MONGO_PORT:-27018}:27018"
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
@@ -19,9 +19,14 @@ services:
       - mongodb_data:/data/db
     networks:
       - quod-network
-    command: mongod --auth
+    command: mongod --port 27018 --auth
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
-  # MongoDB Express for admin interface (optional, disable in production)
+  # MongoDB Express for admin interface (dev only)
   mongo-express:
     image: mongo-express:latest
     container_name: quod-mongo-express
@@ -38,29 +43,45 @@ services:
       - quod-network
     profiles:
       - dev  # Só será iniciado quando o perfil 'dev' for ativado
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
 
   # Spring Boot application
   quod-app:
     build:
       context: .
       dockerfile: docker/Dockerfile
+      args:
+        - SPRING_PROFILES_ACTIVE=${SPRING_PROFILES_ACTIVE:-dev}
     container_name: quod-app
     restart: always
     ports:
-      - "8080:8080"
+      - "${APP_PORT:-8080}:8080"
     environment:
       SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-dev}
-      SPRING_DATA_MONGODB_URI: mongodb://${MONGO_APP_USERNAME}:${MONGO_APP_PASSWORD}@mongodb:27017/${MONGO_DATABASE}?authSource=admin
-      JAVA_OPTS: "-Xmx512m"
+      SPRING_DATA_MONGODB_URI: mongodb://${MONGO_APP_USERNAME}:${MONGO_APP_PASSWORD}@mongodb:27018/${MONGO_DATABASE}?authSource=admin
+      JAVA_OPTS: "-Xms256m -Xmx${JAVA_XMX:-512m}"
       JWT_SECRET: ${JWT_SECRET}
       JWT_EXPIRATION: ${JWT_EXPIRATION}
       JWT_REFRESH_EXPIRATION: ${JWT_REFRESH_EXPIRATION}
       QUOD_SYSTEM_API_BASE_URL: ${QUOD_SYSTEM_API_BASE_URL}
       QUOD_SYSTEM_API_KEY: ${QUOD_SYSTEM_API_KEY}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-*}
+      ALLOWED_METHODS: ${ALLOWED_METHODS:-GET,POST,PUT,DELETE}
+      ALLOWED_HEADERS: ${ALLOWED_HEADERS:-Authorization,Content-Type}
+      CORS_MAX_AGE: ${CORS_MAX_AGE:-3600}
     depends_on:
       - mongodb
     networks:
       - quod-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
 
 networks:
   quod-network:
