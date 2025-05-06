@@ -5,7 +5,6 @@ import org.springframework.data.mongodb.repository.MongoRepository;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
-import java.util.Optional;
 
 @Repository
 public interface BiometricImageMetadataRepository extends MongoRepository<BiometricImageMetadata, String> {
@@ -14,7 +13,5 @@ public interface BiometricImageMetadataRepository extends MongoRepository<Biomet
 
     List<BiometricImageMetadata> findByUsuarioIdAndTipoImagem(String usuarioId, String tipoImagem);
 
-    Optional<BiometricImageMetadata> findByFileId(String fileId);
-
-    void deleteByFileId(String fileId);
+    List<BiometricImageMetadata> findByHashAndUsuarioId(String hash, String usuarioId);
 }

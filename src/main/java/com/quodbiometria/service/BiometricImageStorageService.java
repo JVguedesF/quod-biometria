@@ -1,6 +1,7 @@
 package com.quodbiometria.service;
 
 import com.mongodb.client.gridfs.model.GridFSFile;
+import com.quodbiometria.exception.ImageValidationException;
 import com.quodbiometria.model.dto.request.BiometricImageUploadRequestDTO;
 import com.quodbiometria.model.dto.response.BiometricImageMetadataResponseDTO;
 import com.quodbiometria.model.entity.BiometricImageMetadata;
@@ -25,8 +26,10 @@ import java.io.InputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 @Slf4j
 @Service
@@ -36,21 +39,37 @@ public class BiometricImageStorageService {
     private final GridFsTemplate gridFsTemplate;
     private final BiometricImageMetadataRepository metadataRepository;
     private final BiometricImageMetadataMapper mapper;
+    private final ImageValidationService imageValidationService;
+    private final ImageMetadataExtractionService metadataExtractionService;
 
     public BiometricImageMetadataResponseDTO storeImage(MultipartFile file, BiometricImageUploadRequestDTO requestDTO,
                                                         Map<String, String> additionalMetadata) {
         try {
+            imageValidationService.validateImage(file, requestDTO.getTipoImagem());
+
+            Map<String, String> exifMetadata = metadataExtractionService.extractMetadata(file);
+            Map<String, String> sanitizedExifMetadata = metadataExtractionService.sanitizeMetadata(exifMetadata);
+
+            Map<String, String> allMetadata = new HashMap<>();
+            if (additionalMetadata != null) {
+                allMetadata.putAll(additionalMetadata);
+            }
+
             String hash = calculateSHA256(file.getInputStream());
 
-            // Criar documento de metadados para o GridFS
+            List<BiometricImageMetadata> existingImages = metadataRepository.findByHashAndUsuarioId(hash, requestDTO.getUsuarioId());
+            if (!existingImages.isEmpty()) {
+                log.warn("Imagem duplicada detectada para o usuário {} com hash {}", requestDTO.getUsuarioId(), hash);
+            }
+
             Document metadataDoc = new Document();
             metadataDoc.append("usuarioId", requestDTO.getUsuarioId());
             metadataDoc.append("tipoImagem", requestDTO.getTipoImagem());
             metadataDoc.append("hash", hash);
 
-            if (additionalMetadata != null) {
-                additionalMetadata.forEach(metadataDoc::append);
-            }
+            final Map<String, String> finalMetadata = allMetadata;
+            sanitizedExifMetadata.forEach((key, value) -> finalMetadata.put("exif." + key, value));
+            finalMetadata.forEach(metadataDoc::append);
 
             ObjectId fileId = gridFsTemplate.store(
                     file.getInputStream(),
@@ -74,11 +93,15 @@ public class BiometricImageStorageService {
                     .dataAtualizacao(LocalDateTime.now())
                     .hash(hash)
                     .ativa(true)
+                    .exifMetadata(sanitizedExifMetadata)
                     .build();
 
             BiometricImageMetadata savedMetadata = metadataRepository.save(imageMetadata);
             return mapper.toDTO(savedMetadata);
 
+        } catch (ImageValidationException e) {
+            log.error("Erro de validação da imagem biométrica", e);
+            throw e;
         } catch (IOException | NoSuchAlgorithmException e) {
             log.error("Erro ao armazenar imagem biométrica", e);
             throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR,
@@ -98,11 +121,11 @@ public class BiometricImageStorageService {
     }
 
     public byte[] getImageByFileId(String fileId) throws IOException {
-        GridFSFile file = gridFsTemplate.findOne(new Query(Criteria.where("_id").is(new ObjectId(fileId))));
+        GridFSFile file = Optional.of(gridFsTemplate.findOne(new Query(Criteria.where("_id").is(new ObjectId(fileId)))))
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Arquivo de imagem não encontrado"));
         GridFsResource resource = gridFsTemplate.getResource(file);
         return IOUtils.toByteArray(resource.getInputStream());
     }
-
 
     public BiometricImageMetadataResponseDTO getMetadataById(String id) {
         return mapper.toDTO(findMetadataById(id));

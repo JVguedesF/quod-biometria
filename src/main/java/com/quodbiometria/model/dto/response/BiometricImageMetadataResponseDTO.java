@@ -6,6 +6,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.time.LocalDateTime;
+import java.util.Map;
 
 @Data
 @Builder
@@ -23,4 +24,5 @@ public class BiometricImageMetadataResponseDTO {
     private LocalDateTime dataCriacao;
     private LocalDateTime dataAtualizacao;
     private boolean ativa;
+    private Map<String, String> exifMetadata;
 }

@@ -8,6 +8,7 @@ import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.mapping.Document;
 
 import java.time.LocalDateTime;
+import java.util.Map;
 
 @Data
 @Builder
@@ -30,4 +31,5 @@ public class BiometricImageMetadata {
     private LocalDateTime dataAtualizacao;
     private String hash;
     private boolean ativa;
+    private Map<String, String> exifMetadata;
 }
